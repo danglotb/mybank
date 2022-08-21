@@ -4,7 +4,7 @@ use std::{
 };
 
 use async_trait::async_trait;
-use cqrs_es::{Aggregate, AggregateError, DomainEvent};
+use cqrs_es::{mem_store::MemStore, Aggregate, AggregateError, DomainEvent, EventEnvelope, Query};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize)]
@@ -127,6 +127,20 @@ impl Aggregate for BankAccount {
                     balance,
                 }])
             }
+            BankAccountCommand::WriteCheck {
+                check_number,
+                amount,
+            } => {
+                let balance = self.balance - amount;
+                if balance < 0_f64 {
+                    return Err(BankAccountError(String::from("funds not available")));
+                }
+                Ok(vec![BankAccountEvent::CustomerWroteCheck {
+                    check_number,
+                    amount,
+                    balance,
+                }])
+            }
             _ => Ok(vec![]),
         }
     }
@@ -154,16 +168,55 @@ impl Aggregate for BankAccount {
     }
 }
 
+struct SimpleLoggingQuery {}
+
+#[async_trait]
+impl Query<BankAccount> for SimpleLoggingQuery {
+    async fn dispatch(&self, aggregate_id: &str, events: &[EventEnvelope<BankAccount>]) {
+        for event in events {
+            println!("{}-{}\n{:#?}", aggregate_id, event.sequence, &event.payload);
+        }
+    }
+}
+
 fn main() {
-    println!("Hello, world!");
+    let event_store = MemStore::<BankAccount>::default();
 }
 
 #[cfg(test)]
 mod aggregate_tests {
     use super::*;
-    use cqrs_es::test::TestFramework;
+    use cqrs_es::{test::TestFramework, CqrsFramework};
 
     type AccountTestFramework = TestFramework<BankAccount>;
+
+    #[tokio::test]
+    async fn test_event_store() {
+        let event_store = MemStore::<BankAccount>::default();
+        let query = SimpleLoggingQuery {};
+        let cqrs = CqrsFramework::new(event_store, vec![Box::new(query)], BankAccountServices);
+
+        let aggregate_id = "aggregate-instance-A";
+
+        // deposit $1000
+        cqrs.execute(
+            aggregate_id,
+            BankAccountCommand::DepositMoney { amount: 1000_f64 },
+        )
+        .await
+        .unwrap();
+
+        // write a check for $236.15
+        cqrs.execute(
+            aggregate_id,
+            BankAccountCommand::WriteCheck {
+                check_number: "1337".to_string(),
+                amount: 236.15,
+            },
+        )
+        .await
+        .unwrap();
+    }
 
     #[test]
     fn test_deposit_money() {
