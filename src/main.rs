@@ -4,8 +4,12 @@ use std::{
 };
 
 use async_trait::async_trait;
-use cqrs_es::{mem_store::MemStore, Aggregate, AggregateError, DomainEvent, EventEnvelope, Query};
+use cqrs_es::{
+    mem_store::MemStore, Aggregate, AggregateError, DomainEvent, EventEnvelope, Query, View,
+};
+use postgres_es::{default_postgress_pool, PostgresEventRepository, PostgresViewRepository};
 use serde::{Deserialize, Serialize};
+use sqlx::{Pool, Postgres};
 
 #[derive(Debug, Deserialize)]
 pub enum BankAccountCommand {
@@ -83,7 +87,7 @@ impl BankAccountServices {
 pub struct AtmError;
 pub struct CheckingError;
 
-#[derive(Serialize, Default, Deserialize)]
+#[derive(Debug, Serialize, Default, Deserialize)]
 pub struct BankAccount {
     opened: bool,
     // this is a floating point for our example, don't do this IRL
@@ -179,6 +183,39 @@ impl Query<BankAccount> for SimpleLoggingQuery {
     }
 }
 
+async fn configure_repo() -> PostgresEventRepository {
+    let connection_string = "postgresql://postgres:password@localhost:5432/test";
+    let pool: Pool<Postgres> = default_postgress_pool(connection_string).await;
+    PostgresEventRepository::new(pool)
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct BankAccountView {}
+
+impl View<BankAccount> for BankAccount {
+    fn update(&mut self, event: &EventEnvelope<BankAccount>) {
+        match &event.payload {
+            BankAccountEvent::CustomerDepositedMoney { amount, balance } => {
+                // self.ledger.push(LedgerEntry::new("deposit", *amount));
+                self.balance = *balance;
+            }
+            BankAccountEvent::AccountOpened { account_id } => todo!(),
+            BankAccountEvent::CustomerWithdrewCash { amount, balance } => todo!(),
+            BankAccountEvent::CustomerWroteCheck {
+                check_number,
+                amount,
+                balance,
+            } => todo!(),
+        }
+    }
+}
+
+type MyViewRepository = PostgresViewRepository<BankAccount, BankAccount>;
+
+fn configure_view_repository(db_pool: Pool<Postgres>) -> MyViewRepository {
+    PostgresViewRepository::new("my_view_name", db_pool)
+}
+
 fn main() {
     let event_store = MemStore::<BankAccount>::default();
 }
@@ -196,29 +233,78 @@ mod aggregate_tests {
         let query = SimpleLoggingQuery {};
         let cqrs = CqrsFramework::new(event_store, vec![Box::new(query)], BankAccountServices);
 
-        let aggregate_id = "aggregate-instance-A";
+        {
+            let aggregate_id = "aggregate-instance-Z";
 
-        // deposit $1000
-        cqrs.execute(
-            aggregate_id,
-            BankAccountCommand::DepositMoney { amount: 1000_f64 },
-        )
-        .await
-        .unwrap();
+            // deposit $1000
+            cqrs.execute(
+                aggregate_id,
+                BankAccountCommand::DepositMoney { amount: 1000_f64 },
+            )
+            .await
+            .unwrap();
 
-        // write a check for $236.15
-        cqrs.execute(
-            aggregate_id,
-            BankAccountCommand::WriteCheck {
-                check_number: "1337".to_string(),
-                amount: 236.15,
-            },
-        )
-        .await
-        .unwrap();
+            // write a check for $236.15
+            cqrs.execute(
+                aggregate_id,
+                BankAccountCommand::WriteCheck {
+                    check_number: "1337".to_string(),
+                    amount: 236.15,
+                },
+            )
+            .await
+            .unwrap();
+        }
+
+        {
+            let aggregate_id = "aggregate-instance-B";
+
+            // deposit $1000
+            cqrs.execute(
+                aggregate_id,
+                BankAccountCommand::DepositMoney { amount: 1000_f64 },
+            )
+            .await
+            .unwrap();
+
+            // write a check for $236.15
+            cqrs.execute(
+                aggregate_id,
+                BankAccountCommand::WriteCheck {
+                    check_number: "1337".to_string(),
+                    amount: 236.15,
+                },
+            )
+            .await
+            .unwrap();
+        }
+
+        {
+            let aggregate_id = "aggregate-instance-Z";
+
+            // deposit $1000
+            cqrs.execute(
+                aggregate_id,
+                BankAccountCommand::DepositMoney { amount: 1000_f64 },
+            )
+            .await
+            .unwrap();
+
+            // write a check for $236.15
+            cqrs.execute(
+                aggregate_id,
+                BankAccountCommand::WriteCheck {
+                    check_number: "1337".to_string(),
+                    amount: 236.15,
+                },
+            )
+            .await
+            .unwrap();
+        }
     }
 
     #[test]
+
     fn test_deposit_money() {
         let expected = BankAccountEvent::CustomerDepositedMoney {
             amount: 200.0,
